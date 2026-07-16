@@ -1,0 +1,88 @@
+name: Discover LDXP shops
+
+on:
+  workflow_dispatch:
+    inputs:
+      attempts:
+        description: "本轮验证的 Token 数量"
+        required: true
+        default: "100"
+        type: choice
+        options:
+          - "50"
+          - "100"
+          - "200"
+          - "300"
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ldxp-shop-discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependency
+        run: python -m pip install --disable-pip-version-check "requests>=2.32,<3"
+
+      - name: Run low-frequency discovery
+        env:
+          ATTEMPTS: ${{ github.event_name == 'workflow_dispatch' && inputs.attempts || '100' }}
+        run: |
+          python scripts/ldxp_shop_discover.py \
+            --attempts "$ATTEMPTS" \
+            --min-delay 2 \
+            --max-delay 5 \
+            --output-dir data/ldxp_results \
+            --seed-file data/ldxp_results/valid_shop_urls.txt
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## LDXP 店铺发现结果"
+            echo
+            echo "- Token 规则：3～8 位，字符范围为字母、数字、下划线和连字符"
+            echo "- 请求模式：单线程，随机间隔 2～5 秒"
+            echo "- 检查记录：$(wc -l < data/ldxp_results/checked_tokens.txt 2>/dev/null || echo 0)"
+            echo "- 有效店铺：$(wc -l < data/ldxp_results/valid_shop_urls.txt 2>/dev/null || echo 0)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ldxp-shop-results-${{ github.run_number }}
+          path: data/ldxp_results/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit new results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/ldxp_results/
+          if git diff --cached --quiet; then
+            echo "No new results to commit."
+            exit 0
+          fi
+          git commit -m "chore: update LDXP shop discovery results"
+          git push
